@@ -1,0 +1,149 @@
+%{
+#include <stdio.h>
+#include <string.h>
+int line_number = 1;
+int comment_depth = 0;
+int comment_start_line = 0;
+%}
+
+%option noyywrap
+
+%x LOCALPART DOMAINPART
+
+
+%%
+
+"Mail from"      { printf("%d_tMAIL\n%d_tFROM\n", line_number, line_number); }
+"from Mail"      { printf("%d_tFROM\n%d_tMAIL\n", line_number, line_number); }
+"end Mail"       { printf("%d_tENDMAIL\n", line_number); }
+"schedule"       { printf("%d_tSCHEDULE\n", line_number); }
+"end schedule"   { printf("%d_tENDSCHEDULE\n", line_number); }
+"send"           { printf("%d_tSEND\n", line_number); }
+"to"             { printf("%d_tTO\n", line_number); }
+"set"            { printf("%d_tSET\n", line_number); }
+","              { printf("%d_tCOMMA\n", line_number); }
+":"              { printf("%d_tCOLON\n", line_number); }
+"("              { printf("%d_tLPR\n", line_number); }
+")"              { printf("%d_tRPR\n", line_number); }
+"["              { printf("%d_tLBR\n", line_number); }
+"]"              { printf("%d_tRBR\n", line_number); }
+"@"              { printf("%d_tAT\n", line_number); }
+
+
+[a-zA-Z_][a-zA-Z_0-9]*   { printf("%d_tIDENT_(%s)\n", line_number, yytext); }
+
+"\""([^\"])*"\"" {
+    char cleaned_text[strlen(yytext) - 1];
+    strncpy(cleaned_text, yytext + 1, strlen(yytext) - 2);
+    cleaned_text[strlen(yytext) - 2] = '\0';
+    printf("%d_tSTRING_(%s)\n", line_number, cleaned_text);
+}
+
+[a-zA-Z0-9._%+-]+@([a-zA-Z0-9.-]+)\.([a-zA-Z]{2,}) {
+    char original_text[strlen(yytext) + 1];
+    strcpy(original_text, yytext);
+    
+    char *local_part = strtok(yytext, "@");
+    char *domain_part = strtok(NULL, "\0");
+
+    int is_invalid = 0;
+    int next_line_number = line_number;
+
+    if (local_part[0] == '.' || strstr(local_part, "..") != NULL ||
+        domain_part[0] == '.' || strstr(domain_part, "..") != NULL || 
+        domain_part[0] == '-' || domain_part[strlen(domain_part) - 1] == '-') {
+        
+        printf("%d_ILLEGAL_CHARACTER_(%s)\n", line_number, local_part[0] == '.' ? "." : "-");
+        if (local_part[0] == '.') local_part++;
+        if (domain_part[0] == '-' || domain_part[0] == '.') domain_part++;
+
+        printf("%d_tADDRESS_(%s@%s)\n", line_number, local_part, domain_part);
+        is_invalid = 1;
+    }
+
+    if (is_invalid) {
+        char *token = strtok(local_part, ".-");
+        while (token != NULL) {
+            printf("%d_tIDENT_(%s)\n", line_number, token);
+            token = strtok(NULL, ".-");
+            if (token != NULL) {
+                printf("%d_ILLEGAL_CHARACTER_(.)\n", line_number);
+            }
+        }
+
+        printf("%d_tAT\n", line_number);
+
+        token = strtok(domain_part, ".-");
+        while (token != NULL) {
+            printf("%d_tIDENT_(%s)\n", line_number, token);
+            token = strtok(NULL, ".-");
+            if (token != NULL) {
+                printf("%d_ILLEGAL_CHARACTER_(.)\n", line_number);
+            }
+        }
+    } else {
+        printf("%d_tADDRESS_(%s)\n", line_number, original_text);
+    }
+}
+
+
+
+[0-9]{2}[\/.-][0-9]{2}[\/.-][0-9]{4} {
+    char day[3], month[3], year[5];
+    strncpy(day, yytext, 2);
+    strncpy(month, yytext + 3, 2);
+    strncpy(year, yytext + 6, 4);
+    day[2] = '\0'; month[2] = '\0'; year[4] = '\0';
+    printf("%d_tDATE_(Day_%s_Month_%s_Year_%s)\n", line_number, day, month, year);
+}
+
+[0-9]{2}:[0-9]{2} {
+    char hour[3], minute[3];
+    strncpy(hour, yytext, 2);
+    strncpy(minute, yytext + 3, 2);
+    hour[2] = '\0'; minute[2] = '\0';
+    printf("%d_tTIME_(Hour_%s_Minute_%s)\n", line_number, hour, minute);
+}
+
+"//"([^"\n"])* { /* pass */ }
+
+"/*" {
+  if (comment_depth == 0) comment_start_line = line_number;
+  comment_depth++;
+  char c;
+  while(comment_depth > 0 && (c = input()) != 0) {
+    if (c == '\n') line_number++;
+    if (c == '*') {
+      c = input();
+      if (c == '/') comment_depth--;
+      else unput(c);
+    } else if (c == '/') {
+      c = input();
+      if (c == '*') comment_depth++;
+      else unput(c);
+    }
+  }
+  if (comment_depth > 0) {
+    printf("%d_ILLEGAL_CHARACTER_(*)\n%d_ILLEGAL_CHARACTER_(/)\n", comment_start_line, comment_start_line);
+    comment_depth = 0;
+  }
+}
+
+"*/" {
+  if (comment_depth == 0) {
+    printf("%d_ILLEGAL_CHARACTER_(*)\n%d_ILLEGAL_CHARACTER_(/)\n", line_number, line_number);
+  }
+}
+
+[ \t]+          /* pass white space */
+
+[^ \t\na-zA-Z0-9@:\"\/\.\[\]\(\)\,\+\-_]  { printf("%d_ILLEGAL_CHARACTER_(%s)\n", line_number, yytext); }
+
+"\n" { line_number++; }
+
+%%
+
+int main() {
+    yylex();
+    return 0;
+}
